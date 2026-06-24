@@ -497,6 +497,7 @@
               <th style="text-align:center;">最大件数</th>
               <th style="text-align:center;" title="現在の担当のみで固定。新規・上限超流入を一切受け取らない">追加なし</th>
               <th style="text-align:right;">現在の担当（週合計）</th>
+              <th style="text-align:center;" title="配送時間算出に使用する出発時刻">出発時刻</th>
             </tr>
           </thead>
           <tbody id="driver-tbody"></tbody>
@@ -521,6 +522,14 @@
         ✓ 午前指定の企業は各配送員の先頭に配置<br>
         ✓ 現在の配送員予定を優先して引き継ぎ（件数上限を超える場合は地理的に近い配送員へ）<br>
         ✓ 選択したデポの住所を出発地として距離が近い順に並び替え
+      </div>
+      <div class="card-title" style="margin-top:4px;">配送時間算出の設定</div>
+      <div style="display:flex; align-items:center; gap:12px; margin-bottom:20px; font-size:13px; color:var(--text2);">
+        <span>1件あたりの居住時間（荷物渡し・駐車含む）:</span>
+        <input type="number" id="stop-minutes" min="1" max="60" value="10"
+          style="width:60px; text-align:center; padding:4px 8px; border:0.5px solid var(--border2); border-radius:6px;
+                 font-family:'DM Mono',monospace; font-size:13px; background:var(--surface2); color:var(--text);">
+        <span>分</span>
       </div>
       <div class="card-title" style="margin-top:4px;">追加条件</div>
       <div id="conditions-list"></div>
@@ -549,6 +558,9 @@
         <input type="text" class="search-input" id="result-search" placeholder="企業名・配送員で絞り込み..." oninput="filterResults()">
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <button class="btn btn-outline" id="calc-time-btn" onclick="calcDeliveryTimes()" title="Google Maps APIで移動時間を取得し到着予定時刻を算出">
+          🕐 配送時間を計算
+        </button>
         <button class="btn btn-primary" onclick="downloadFinalLayoutExcel()" title="アップロードした最終調整シートと同じ22列レイアウト">
           ⬇ 最終調整レイアウト
         </button>
@@ -571,6 +583,7 @@
               <th>指定</th>
               <th>備考</th>
               <th>距離</th>
+              <th id="arrival-th" style="display:none;">到着予定</th>
             </tr>
           </thead>
           <tbody id="result-tbody"></tbody>
@@ -1580,12 +1593,14 @@ function resetApiKey() {
 const DAY_DRIVER_COL_MAIN = {月:'配送員予定（月）',火:'配送員予定（火）',水:'配送員予定（水）',木:'配送員予定（木）'};
 
 function buildDriverTable() {
-  // 既存の limit / noGrow 設定は保持（再構築でユーザー入力が消えないように）
+  // 既存の limit / noGrow / departTime 設定は保持（再構築でユーザー入力が消えないように）
   const prevLimits = {};
   const prevNoGrow = {};
+  const prevDepart = {};
   Object.entries(drivers||{}).forEach(([n,v]) => {
     if (v && v.limit) prevLimits[n]=v.limit;
     if (v && v.noGrow) prevNoGrow[n] = true;
+    if (v && v.departTime) prevDepart[n] = v.departTime;
   });
 
   drivers = {};
@@ -1600,6 +1615,7 @@ function buildDriverTable() {
             name: drv,
             limit: prevLimits[drv] || 10,
             noGrow: !!prevNoGrow[drv],
+            departTime: prevDepart[drv] || '09:00',
             days: {月:false,火:false,水:false,木:false},
             currentCount: {月:0,火:0,水:0,木:0},
           };
@@ -1664,6 +1680,11 @@ function buildDriverTable() {
         </label>
       </td>
       <td style="text-align:right;font-family:'DM Mono',monospace;font-size:12px;color:var(--text2);">${totalCnt}${dr.noGrow?' <span class="nogrow-badge">固定</span>':''}</td>
+      <td style="text-align:center;">
+        <input type="time" class="limit-input" value="${dr.departTime||'09:00'}"
+          data-driver="${name.replace(/"/g,'&quot;')}" onchange="updateDriverDepart(this)"
+          style="width:80px;">
+      </td>
     `;
     tbody.appendChild(tr);
   });
@@ -1673,6 +1694,11 @@ function updateDriverLimit(input) {
   const name = input.dataset.driver;
   const v = parseInt(input.value,10);
   if (drivers[name] && v>0) drivers[name].limit = v;
+}
+
+function updateDriverDepart(input) {
+  const name = input.dataset.driver;
+  if (drivers[name]) drivers[name].departTime = input.value;
 }
 
 function updateDriverNoGrow(cb) {
@@ -2000,6 +2026,8 @@ function buildResultView() {
       fromTag = `<span class="from-tag" title="変更前: ${orig}">← 元: ${orig}</span>`;
     }
     const memo = [r['備考1'], r['備考2']].filter(x=>x&&String(x).trim()).join(' / ');
+    tr.dataset.driver = r._driver||'';
+    tr.dataset.rowIdx = String(n-1);
     tr.innerHTML = `
       <td class="order-num">${n++}</td>
       <td><span class="driver-cell">${r._driver||'-'}</span>${fromTag}</td>
@@ -2009,6 +2037,7 @@ function buildResultView() {
       <td>${amBadge}${overBadge}</td>
       <td style="font-size:11px;color:var(--text3);">${memo}</td>
       <td><span class="dist-badge">${(r.baseDist||0).toFixed(1)} km</span></td>
+      <td class="arrival-cell" style="display:none;font-family:'DM Mono',monospace;font-size:12px;color:var(--text2);">—</td>
     `;
     tbody.appendChild(tr);
   });
@@ -2021,6 +2050,100 @@ function filterResults() {
   document.querySelectorAll('#result-tbody tr').forEach(tr => {
     if (!q) { tr.style.display=''; return; }
     tr.style.display = tr.textContent.toLowerCase().includes(q) ? '' : 'none';
+  });
+}
+
+// =====================================================
+// ===== 配送時間算出（Distance Matrix API）=====
+// =====================================================
+async function calcDeliveryTimes() {
+  if (!googleApiKey) {
+    alert('Google Maps APIキーが設定されていません。\n画面右上のリセットボタンからAPIキーを再設定してください。');
+    return;
+  }
+  const dayRows = allocationResult[currentDay] || [];
+  if (!dayRows.length) { alert('表示中の曜日に割り振りデータがありません'); return; }
+
+  const stopMin = parseInt(document.getElementById('stop-minutes')?.value||'10', 10) || 10;
+
+  // ドライバーごとに行をグループ化（表示順を保持）
+  const byDriver = {};
+  dayRows.forEach(r => {
+    if (!byDriver[r._driver]) byDriver[r._driver] = [];
+    byDriver[r._driver].push(r);
+  });
+
+  const btn = document.getElementById('calc-time-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '計算中...'; }
+  showLoading('配送時間を計算中...');
+
+  // デポ座標
+  const depotCoords = BASE; // [lat, lng]
+
+  const results = {}; // rowオブジェクト → 到着時刻(分)のマップ
+
+  try {
+    for (const [drvName, rows] of Object.entries(byDriver)) {
+      const depart = (drivers[drvName]?.departTime) || '09:00';
+      const [hh, mm] = depart.split(':').map(Number);
+      let currentMin = hh * 60 + mm;
+      let prevCoords = depotCoords;
+
+      for (const row of rows) {
+        const dest = row.coords;
+        if (!dest || !dest[0]) {
+          results[row] = null;
+          prevCoords = dest || prevCoords;
+          continue;
+        }
+        // Distance Matrix API で移動時間を取得
+        const origin = `${prevCoords[0]},${prevCoords[1]}`;
+        const destination = `${dest[0]},${dest[1]}`;
+        const url = `https://maps.googleapis.com/maps/api/distancematrix/json?origins=${origin}&destinations=${destination}&key=${googleApiKey}&language=ja&mode=driving`;
+        try {
+          const res = await fetch(url);
+          const json = await res.json();
+          const element = json?.rows?.[0]?.elements?.[0];
+          if (element?.status === 'OK') {
+            const travelSec = element.duration.value; // 秒
+            currentMin += Math.ceil(travelSec / 60);
+          }
+        } catch(e) {
+          // API失敗時は距離から推定（平均30km/h）
+          const distKm = row.baseDist || 0;
+          currentMin += Math.ceil(distKm / 30 * 60);
+        }
+        results[row] = currentMin;
+        currentMin += stopMin; // 居住時間
+        prevCoords = dest;
+        // APIレート制限対策
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+  } finally {
+    hideLoading();
+    if (btn) { btn.disabled = false; btn.textContent = '🕐 配送時間を計算'; }
+  }
+
+  // 到着予定列を表示
+  document.getElementById('arrival-th').style.display = '';
+  document.querySelectorAll('#result-tbody .arrival-cell').forEach(td => td.style.display = '');
+
+  // 各行に到着時刻を書き込む（dayRowsの順序でTR要素と対応）
+  const trs = document.querySelectorAll('#result-tbody tr');
+  let idx = 0;
+  dayRows.forEach((row, i) => {
+    const tr = trs[i];
+    if (!tr) return;
+    const cell = tr.querySelector('.arrival-cell');
+    if (!cell) return;
+    const mins = results[row];
+    if (mins == null) { cell.textContent = '—'; return; }
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    cell.textContent = `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+    cell.style.color = 'var(--accent)';
+    cell.style.fontWeight = '500';
   });
 }
 
