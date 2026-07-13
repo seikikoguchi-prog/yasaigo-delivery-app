@@ -3593,15 +3593,20 @@ async function optimizeRoutes() {
   const k = drivers.length;
   if (k < 1) { alert('配送員が見つかりません'); return; }
 
-  // 2. 全企業をジオコード（ビル名除去）
+  // 2. 全企業をジオコード（ビル名除去・レート制限対策で100ms/5件）
   showLoading(`住所を取得中 (0/${allCompanies.length}件)...`);
   const addrCache = {};
+  let geocodeCount = 0;
   for (let i = 0; i < allCompanies.length; i++) {
     const c = allCompanies[i];
     const addr = String(c['住所']||'').split(/[ 　]/)[0];
     if (addr && addrCache[addr] === undefined) {
       addrCache[addr] = null;
-      try { if (googleApiKey) { const r = await geocodeAddress(addr); if (r) addrCache[addr] = r; } } catch(e) {}
+      if (googleApiKey) {
+        try { const r = await geocodeAddress(addr); if (r) addrCache[addr] = r; } catch(e) {}
+        geocodeCount++;
+        if (geocodeCount % 5 === 0) await new Promise(r => setTimeout(r, 150));
+      }
     }
     c.coords = addrCache[addr] || null;
     document.getElementById('loading-text').textContent = `住所を取得中 (${i+1}/${allCompanies.length}件)...`;
@@ -3609,19 +3614,36 @@ async function optimizeRoutes() {
   hideLoading();
 
   const geocoded = allCompanies.filter(c => c.coords);
+  const failedCount = allCompanies.length - geocoded.length;
   if (geocoded.length < k) { alert('ジオコードできた企業数が配送員数より少ないため最適化できません'); return; }
+  if (failedCount > 0) {
+    const ok = confirm(`${failedCount}件の住所を取得できませんでした（ビル名のみ等）。\n取得できた${geocoded.length}件で最適化を続けますか？`);
+    if (!ok) return;
+  }
 
-  // 3. k-means クラスタリング
+  // 3. k-means クラスタリング（等分割になるよう上限を補正）
   const points = geocoded.map(c => c.coords);
-  const labels = kmeansCluster(points, k, 100);
+  const labels = kmeansCluster(points, k, 200);
 
+  // クラスタが極端に偏った場合、上限を超えた企業を他クラスタへ移動
+  const maxPerCluster = Math.ceil(geocoded.length / k * 2); // 平均の2倍を上限
   const clusters = {};
   geocoded.forEach((c, i) => {
     if (!clusters[labels[i]]) clusters[labels[i]] = [];
     clusters[labels[i]].push(c);
   });
+  // 過大クラスタから溢れた企業を最近傍の別クラスタへ
+  const clusterKeys = Object.keys(clusters);
+  clusterKeys.forEach(ci => {
+    while (clusters[ci].length > maxPerCluster) {
+      const overflow = clusters[ci].pop();
+      let bestKey = clusterKeys.find(k2 => k2 !== ci && clusters[k2].length < maxPerCluster);
+      if (!bestKey) bestKey = clusterKeys.find(k2 => k2 !== ci);
+      if (bestKey) clusters[bestKey].push(overflow);
+    }
+  });
 
-  // 4. 各クラスタに最近傍デポを割り当て
+  // 4. 各クラスタに最近傍デポを割り当て（同一都道府県優先、最大50km以内）
   showLoading('デポ座標を取得中...');
   const depotNames = Object.keys(DEPOT_ADDRESSES).filter(d => !excludeDepots.has(d));
   const depotCoordMap = {};
@@ -3634,8 +3656,11 @@ async function optimizeRoutes() {
     const centLat = comps.reduce((s,c) => s+c.coords[0], 0) / comps.length;
     const centLon = comps.reduce((s,c) => s+c.coords[1], 0) / comps.length;
     const centroid = [centLat, centLon];
-    let bestDepot = depotNames[0]; let minD = Infinity;
-    depotNames.forEach(dn => {
+    // 50km以内のデポのみ候補にする（遠すぎるデポを除外）
+    const nearDepots = depotNames.filter(dn => depotCoordMap[dn] && haversine(centroid, depotCoordMap[dn]) <= 50);
+    const candidates = nearDepots.length > 0 ? nearDepots : depotNames.filter(dn => depotCoordMap[dn]);
+    let bestDepot = candidates[0] || depotNames[0]; let minD = Infinity;
+    candidates.forEach(dn => {
       if (depotCoordMap[dn]) { const d = haversine(centroid, depotCoordMap[dn]); if (d < minD) { minD = d; bestDepot = dn; } }
     });
     return { centroid, depot: bestDepot, depotCoords: depotCoordMap[bestDepot]||centroid, companies: comps };
