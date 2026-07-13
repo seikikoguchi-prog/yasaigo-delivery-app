@@ -3614,8 +3614,6 @@ async function optimizeRoutes() {
   const allDriversSet = new Set();
   Object.values(depotCompanies).forEach(rows => rows.forEach(r => allDriversSet.add(r._driver)));
   const drivers = [...allDriversSet].filter(Boolean).sort();
-  const totalCompanies = Object.values(depotCompanies).reduce((s, r) => s + r.length, 0);
-  const targetPerDriver = Math.ceil(totalCompanies / drivers.length);
 
   // 2. デポ住所のみジオコード（少数なので確実）
   showLoading('デポ座標を取得中...');
@@ -3634,7 +3632,7 @@ async function optimizeRoutes() {
   const groups = []; // {depot, depotCoords, companies[]}
   activeDepots.forEach(depot => {
     const comps = depotCompanies[depot];
-    const numDrivers = Math.max(1, Math.round(comps.length / targetPerDriver));
+    const numDrivers = Math.max(1, Math.ceil(comps.length / maxPerDriver));
     if (numDrivers === 1) {
       groups.push({ depot, depotCoords: depotCoordMap[depot], companies: comps });
     } else {
