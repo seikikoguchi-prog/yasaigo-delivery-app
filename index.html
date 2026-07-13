@@ -3680,13 +3680,35 @@ async function optimizeRoutes() {
     assignedDrivers.add(bestDrv);
   });
 
-  // 5. グループ内を貪欲最近傍でルート順序化し、デポ住所をジオコード済み座標で距離計算
+  // 5. 各グループの企業住所をジオコードして正確な距離を計算
+  if (googleApiKey) {
+    // 全グループの住所を重複なく収集
+    const allAddrs = new Set();
+    groups.forEach(cl => cl.companies.forEach(c => {
+      allAddrs.add(String(c['住所']||'').split(/[ 　]/)[0]);
+    }));
+    showLoading(`企業住所を取得中 (0/${allAddrs.size}件)...`);
+    let done = 0;
+    for (const addr of allAddrs) {
+      if (addr) {
+        try { await geocodeAddress(addr); } catch(e) {}
+        done++;
+        if (done % 5 === 0) await new Promise(r => setTimeout(r, 150));
+        document.getElementById('loading-text').textContent = `企業住所を取得中 (${done}/${allAddrs.size}件)...`;
+      }
+    }
+    hideLoading();
+  }
+
+  // 6. 貪欲最近傍でルート順序化し距離計算（ジオコード済み座標優先）
   groups.forEach(cl => {
     const startCoords = cl.depotCoords;
-    const remaining = cl.companies.map(c => ({
-      ...c,
-      _routeCoords: c._coords || getCoordsFallback(String(c['住所']||''))
-    }));
+    const remaining = cl.companies.map(c => {
+      const addr = String(c['住所']||'').split(/[ 　]/)[0];
+      const gc = addr ? (geocodeAddress._cache?.[addr] || coordCache?.[addr]) : null;
+      const rc = gc || c._coords || getCoordsFallback(String(c['住所']||''));
+      return {...c, _routeCoords: rc};
+    });
     const ordered = [];
     let cur = startCoords;
     while (remaining.length) {
