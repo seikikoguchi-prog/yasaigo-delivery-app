@@ -3575,159 +3575,144 @@ async function optimizeRoutes() {
   const excludeDepots = new Set(
     [...document.querySelectorAll('input[name="optroute-exclude-depot"]:checked')].map(cb => cb.value)
   );
-
   const dayCol = DAY_DRIVER_COL[day];
 
-  // 1. 全デポの対象曜日の企業を収集
-  const allCompanies = [];
+  // 1. 全デポの企業を現デポ単位でまとめる
+  const depotCompanies = {}; // depot -> [rows]
   Object.entries(allData||{}).forEach(([depot, rows]) => {
     if (excludeDepots.has(depot)) return;
     rows.forEach(r => {
       const drv = String(r[dayCol]||'').trim();
-      if (drv) allCompanies.push({...r, _depot: depot, _driver: drv});
+      if (!drv) return;
+      if (!depotCompanies[depot]) depotCompanies[depot] = [];
+      depotCompanies[depot].push({...r, _depot: depot, _driver: drv});
     });
   });
-  if (!allCompanies.length) { alert(`${day}曜日の配送データがありません`); return; }
+  const activeDepots = Object.keys(depotCompanies).filter(d => depotCompanies[d].length > 0);
+  if (!activeDepots.length) { alert(`${day}曜日の配送データがありません`); return; }
 
-  const drivers = [...new Set(allCompanies.map(c => c._driver))].filter(Boolean).sort();
-  const k = drivers.length;
-  if (k < 1) { alert('配送員が見つかりません'); return; }
+  const allDriversSet = new Set();
+  Object.values(depotCompanies).forEach(rows => rows.forEach(r => allDriversSet.add(r._driver)));
+  const drivers = [...allDriversSet].filter(Boolean).sort();
+  const totalCompanies = Object.values(depotCompanies).reduce((s, r) => s + r.length, 0);
+  const targetPerDriver = Math.ceil(totalCompanies / drivers.length);
 
-  // 2. 全企業をジオコード（ビル名除去・レート制限対策で100ms/5件）
-  showLoading(`住所を取得中 (0/${allCompanies.length}件)...`);
-  const addrCache = {};
-  let geocodeCount = 0;
-  for (let i = 0; i < allCompanies.length; i++) {
-    const c = allCompanies[i];
-    const addr = String(c['住所']||'').split(/[ 　]/)[0];
-    if (addr && addrCache[addr] === undefined) {
-      addrCache[addr] = null;
-      if (googleApiKey) {
-        try { const r = await geocodeAddress(addr); if (r) addrCache[addr] = r; } catch(e) {}
-        geocodeCount++;
-        if (geocodeCount % 5 === 0) await new Promise(r => setTimeout(r, 150));
-      }
-    }
-    c.coords = addrCache[addr] || null;
-    document.getElementById('loading-text').textContent = `住所を取得中 (${i+1}/${allCompanies.length}件)...`;
-  }
-  hideLoading();
-
-  const geocoded = allCompanies.filter(c => c.coords);
-  const failedCount = allCompanies.length - geocoded.length;
-  if (geocoded.length < k) { alert('ジオコードできた企業数が配送員数より少ないため最適化できません'); return; }
-  if (failedCount > 0) {
-    const ok = confirm(`${failedCount}件の住所を取得できませんでした（ビル名のみ等）。\n取得できた${geocoded.length}件で最適化を続けますか？`);
-    if (!ok) return;
-  }
-
-  // 3. k-means クラスタリング（等分割になるよう上限を補正）
-  const points = geocoded.map(c => c.coords);
-  const labels = kmeansCluster(points, k, 200);
-
-  // クラスタが極端に偏った場合、上限を超えた企業を他クラスタへ移動
-  const maxPerCluster = Math.ceil(geocoded.length / k * 2); // 平均の2倍を上限
-  const clusters = {};
-  geocoded.forEach((c, i) => {
-    if (!clusters[labels[i]]) clusters[labels[i]] = [];
-    clusters[labels[i]].push(c);
-  });
-  // 過大クラスタから溢れた企業を最近傍の別クラスタへ
-  const clusterKeys = Object.keys(clusters);
-  clusterKeys.forEach(ci => {
-    while (clusters[ci].length > maxPerCluster) {
-      const overflow = clusters[ci].pop();
-      let bestKey = clusterKeys.find(k2 => k2 !== ci && clusters[k2].length < maxPerCluster);
-      if (!bestKey) bestKey = clusterKeys.find(k2 => k2 !== ci);
-      if (bestKey) clusters[bestKey].push(overflow);
-    }
-  });
-
-  // 4. 各クラスタに最近傍デポを割り当て（同一都道府県優先、最大50km以内）
+  // 2. デポ住所のみジオコード（少数なので確実）
   showLoading('デポ座標を取得中...');
-  const depotNames = Object.keys(DEPOT_ADDRESSES).filter(d => !excludeDepots.has(d));
   const depotCoordMap = {};
-  for (const dn of depotNames) {
-    try { const c = await geocodeAddress(DEPOT_ADDRESSES[dn]); if (c) depotCoordMap[dn] = c; } catch(e) {}
+  for (const dn of activeDepots) {
+    const addr = DEPOT_ADDRESSES[dn];
+    if (addr) {
+      try { const c = await geocodeAddress(addr); if (c) depotCoordMap[dn] = c; } catch(e) {}
+    }
+    if (!depotCoordMap[dn]) depotCoordMap[dn] = getCoordsFallback(DEPOT_ADDRESSES[dn]||dn);
   }
   hideLoading();
 
-  const clusterList = Object.entries(clusters).map(([ci, comps]) => {
-    const centLat = comps.reduce((s,c) => s+c.coords[0], 0) / comps.length;
-    const centLon = comps.reduce((s,c) => s+c.coords[1], 0) / comps.length;
-    const centroid = [centLat, centLon];
-    // 50km以内のデポのみ候補にする（遠すぎるデポを除外）
-    const nearDepots = depotNames.filter(dn => depotCoordMap[dn] && haversine(centroid, depotCoordMap[dn]) <= 50);
-    const candidates = nearDepots.length > 0 ? nearDepots : depotNames.filter(dn => depotCoordMap[dn]);
-    let bestDepot = candidates[0] || depotNames[0]; let minD = Infinity;
-    candidates.forEach(dn => {
-      if (depotCoordMap[dn]) { const d = haversine(centroid, depotCoordMap[dn]); if (d < minD) { minD = d; bestDepot = dn; } }
-    });
-    return { centroid, depot: bestDepot, depotCoords: depotCoordMap[bestDepot]||centroid, companies: comps };
+  // 3. デポごとにドライバー数を比例配分し、担当グループを作成
+  // 各デポに「何人割り当てるか」を企業数比で決める
+  const groups = []; // {depot, depotCoords, companies[]}
+  activeDepots.forEach(depot => {
+    const comps = depotCompanies[depot];
+    const numDrivers = Math.max(1, Math.round(comps.length / targetPerDriver));
+    if (numDrivers === 1) {
+      groups.push({ depot, depotCoords: depotCoordMap[depot], companies: comps });
+    } else {
+      // 複数ドライバーが必要なデポ→企業を fallback 座標でクラスタリングして分割
+      comps.forEach(c => { c._coords = getCoordsFallback(String(c['住所']||'')); });
+      const pts = comps.map(c => c._coords);
+      const labs = kmeansCluster(pts, numDrivers, 100);
+      const sub = {};
+      comps.forEach((c, i) => { if (!sub[labs[i]]) sub[labs[i]] = []; sub[labs[i]].push(c); });
+      Object.values(sub).forEach(subComps => {
+        groups.push({ depot, depotCoords: depotCoordMap[depot], companies: subComps });
+      });
+    }
   });
 
-  // 5. ドライバーをクラスタに割り当て（現デポとクラスタ重心の近さで貪欲マッチング）
-  const driverCurrentDepot = {};
+  // グループ数 > ドライバー数なら余分なグループを最大グループにマージ
+  while (groups.length > drivers.length) {
+    groups.sort((a, b) => a.companies.length - b.companies.length);
+    const smallest = groups.shift();
+    // 最近傍デポを持つ最大でないグループにマージ
+    let best = 0; let bestD = Infinity;
+    groups.forEach((g, i) => {
+      const d = haversine(depotCoordMap[g.depot]||g.depotCoords, depotCoordMap[smallest.depot]||smallest.depotCoords);
+      if (d < bestD) { bestD = d; best = i; }
+    });
+    groups[best].companies.push(...smallest.companies);
+  }
+
+  // 4. ドライバーをグループに割り当て（現在のデポとの近さで貪欲マッチング）
+  const driverHomeDepot = {};
   drivers.forEach(drv => {
     for (const [depot, rows] of Object.entries(allData||{})) {
-      if (rows.some(r => String(r[dayCol]||'').trim() === drv)) { driverCurrentDepot[drv] = depot; break; }
+      if (rows.some(r => String(r[dayCol]||'').trim() === drv)) { driverHomeDepot[drv] = depot; break; }
     }
   });
 
   const assignedDrivers = new Set();
-  clusterList.forEach(cl => {
-    const dCoords = cl.depotCoords;
+  // グループを「推奨デポに最も近い現ドライバー」で割り当て
+  groups.sort((a, b) => b.companies.length - a.companies.length); // 大きいグループを優先処理
+  groups.forEach(cl => {
+    const gCoords = cl.depotCoords;
     let bestDrv = null; let bestScore = Infinity;
     drivers.forEach(drv => {
       if (assignedDrivers.has(drv)) return;
-      const cur = depotCoordMap[driverCurrentDepot[drv]] || cl.centroid;
-      const score = haversine(dCoords, cur);
+      const homeCoords = depotCoordMap[driverHomeDepot[drv]] || gCoords;
+      const score = haversine(gCoords, homeCoords);
       if (score < bestScore) { bestScore = score; bestDrv = drv; }
     });
     if (!bestDrv) bestDrv = drivers.find(d => !assignedDrivers.has(d)) || '未割当';
     cl.driver = bestDrv;
+    cl.driverOrigDepot = driverHomeDepot[bestDrv] || cl.depot;
     assignedDrivers.add(bestDrv);
   });
 
-  // 6. 各クラスタ内を貪欲最近傍でルート順序化し区間距離・総距離を算出
-  clusterList.forEach(cl => {
-    const remaining = cl.companies.slice();
+  // 5. グループ内を貪欲最近傍でルート順序化し、デポ住所をジオコード済み座標で距離計算
+  groups.forEach(cl => {
+    const startCoords = cl.depotCoords;
+    const remaining = cl.companies.map(c => ({
+      ...c,
+      _routeCoords: c._coords || getCoordsFallback(String(c['住所']||''))
+    }));
     const ordered = [];
-    let cur = cl.depotCoords;
+    let cur = startCoords;
     while (remaining.length) {
       let bi = 0; let bd = Infinity;
-      remaining.forEach((c, i) => { const d = haversine(cur, c.coords); if (d < bd) { bd = d; bi = i; } });
+      remaining.forEach((c, i) => { const d = haversine(cur, c._routeCoords); if (d < bd) { bd = d; bi = i; } });
       ordered.push({...remaining[bi], _legDist: bd});
-      cur = remaining[bi].coords;
+      cur = remaining[bi]._routeCoords;
       remaining.splice(bi, 1);
     }
     cl.ordered = ordered;
-    cl.totalDist = ordered.reduce((s, c) => s + c._legDist, 0) + haversine(cur, cl.depotCoords);
+    cl.totalDist = ordered.reduce((s, c) => s + c._legDist, 0) + haversine(cur, startCoords);
   });
 
-  clusterList.sort((a, b) => a.totalDist - b.totalDist);
-  renderOptRouteResult(clusterList, day);
+  groups.sort((a, b) => a.totalDist - b.totalDist);
+  renderOptRouteResult(groups, day);
 }
 
-function renderOptRouteResult(clusterList, day) {
+function renderOptRouteResult(groups, day) {
   const container = document.getElementById('optroute-result');
   container.style.display = 'block';
 
-  const totalDist = clusterList.reduce((s, cl) => s + cl.totalDist, 0);
+  const totalDist = groups.reduce((s, cl) => s + cl.totalDist, 0);
+  const totalComps = groups.reduce((s, cl) => s + cl.ordered.length, 0);
   container.innerHTML = `
     <div class="card" style="margin-bottom:16px;padding:12px 16px;background:var(--surface2);">
-      <div style="font-size:13px;color:var(--text3);">${day}曜日 — ${clusterList.length}名 ／ 全${clusterList.reduce((s,cl)=>s+cl.ordered.length,0)}件 ／ 総距離合計 <strong>${totalDist.toFixed(2)} km</strong></div>
+      <div style="font-size:13px;color:var(--text3);">${day}曜日 — ${groups.length}名 ／ 全${totalComps}件 ／ 総距離合計（概算）<strong>${totalDist.toFixed(1)} km</strong></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:4px;">※ 距離はデポ住所ジオコーディング＋企業住所fallback座標による概算値です</div>
     </div>`;
 
-  clusterList.forEach(cl => {
+  groups.forEach(cl => {
     const card = document.createElement('div');
     card.className = 'card';
     card.style.marginBottom = '16px';
 
-    const currentDepot = driverCurrentDepot(cl.driver, day);
-    const depotChanged = currentDepot !== cl.depot;
+    const depotChanged = cl.driverOrigDepot && cl.driverOrigDepot !== cl.depot;
     const depotLabel = depotChanged
-      ? `<span style="color:#e07b00;">${currentDepot} → <strong>${cl.depot}</strong>（デポ変更）</span>`
+      ? `<span style="color:#e07b00;">${cl.driverOrigDepot} → <strong>${cl.depot}</strong>（デポ変更）</span>`
       : `<strong>${cl.depot}</strong>`;
 
     const rows = cl.ordered.map((c, i) => `
@@ -3746,7 +3731,7 @@ function renderOptRouteResult(clusterList, day) {
           <span style="margin-left:12px;font-size:12px;color:var(--text3);">推奨デポ: ${depotLabel}</span>
         </div>
         <div style="font-size:12px;color:var(--text3);">
-          担当 <strong>${cl.ordered.length}件</strong> ／ 総距離 <strong>${cl.totalDist.toFixed(2)} km</strong>
+          担当 <strong>${cl.ordered.length}件</strong> ／ 総距離 <strong>${cl.totalDist.toFixed(1)} km</strong>（概算）
         </div>
       </div>
       <div class="result-scroll">
