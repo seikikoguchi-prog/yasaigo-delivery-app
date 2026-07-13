@@ -460,6 +460,7 @@
       <button class="btn btn-outline" id="btn-step1-next" onclick="goStep(2)" disabled>割り振り設定へ →</button>
       <button class="btn btn-outline" id="btn-step1-absence" onclick="goStep(6)" disabled style="margin-left:auto;">🌿 配送員お休み振り分け →</button>
       <button class="btn btn-outline" id="btn-step1-handover" onclick="goStep(7); initHandoverStep()" disabled>👤 ドライバー交代・ルート構築 →</button>
+      <button class="btn btn-outline" id="btn-step1-optroute" onclick="goStep(8); initOptRouteStep()" disabled>🗺 最適ルート提案 →</button>
       <button class="btn btn-primary" id="btn-step1-assign" onclick="goStep(5)" disabled>＋ 新規企業をアサインする →</button>
     </div>
   </div>
@@ -945,6 +946,43 @@
     </div>
   </div>
 
+  <!-- STEP 8: 最適ルート提案 -->
+  <div class="step" id="step-8">
+    <div class="step-header">
+      <div class="step-num">8</div>
+      <div class="step-title">現配送員で<strong>最適ルートを提案</strong>（デポ変更あり）</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">設定</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">対象曜日</label>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="radio" name="optroute-day" value="月"> 月</label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="radio" name="optroute-day" value="火"> 火</label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="radio" name="optroute-day" value="水" checked> 水</label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="radio" name="optroute-day" value="木"> 木</label>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">除外するデポ（複数選択可）</label>
+          <div id="optroute-exclude-depots" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:var(--surface2);border-radius:6px;min-height:36px;">
+            <span style="font-size:12px;color:var(--text3);">ファイル読み込み後に表示されます</span>
+          </div>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">※ 全デポの企業を地理的にクラスタリングし、現在の配送員で最も効率よく回れるルートを提案します。デポも最近傍に自動割り当てします。</div>
+      <button class="btn btn-primary" onclick="optimizeRoutes()">🗺 最適ルートを提案</button>
+    </div>
+
+    <div id="optroute-result" style="display:none;margin-top:16px;"></div>
+
+    <div class="nav-btns">
+      <button class="btn btn-outline" onclick="goStep(1)">← トップに戻る</button>
+    </div>
+  </div>
+
 </div>
 
 <script>
@@ -1196,6 +1234,8 @@ function parseWorkbook() {
   if (absBtn) absBtn.disabled = false;
   const handoverBtn = document.getElementById('btn-step1-handover');
   if (handoverBtn) handoverBtn.disabled = false;
+  const optRouteBtn = document.getElementById('btn-step1-optroute');
+  if (optRouteBtn) optRouteBtn.disabled = false;
 }
 
 function selectDepot(depot, btn) {
@@ -3506,6 +3546,202 @@ function downloadHandoverExcel() {
 
   const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
   XLSX.writeFile(wb2, `ドライバー交代_${to}_${today}.xlsx`);
+}
+
+// ─── Step 8: 最適ルート提案 ────────────────────────────────────────────
+
+function initOptRouteStep() {
+  const depots = Object.keys(allData||{}).sort();
+  if (!depots.length) { alert('先にExcelファイルを読み込んでください'); goStep(1); return; }
+  const box = document.getElementById('optroute-exclude-depots');
+  if (box) {
+    box.innerHTML = '';
+    depots.forEach(d => {
+      const lbl = document.createElement('label');
+      lbl.style.cssText = 'font-size:13px;display:flex;align-items:center;gap:4px;cursor:pointer;';
+      const cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.value = d; cb.name = 'optroute-exclude-depot';
+      lbl.appendChild(cb);
+      lbl.appendChild(document.createTextNode(d));
+      box.appendChild(lbl);
+    });
+  }
+}
+
+async function optimizeRoutes() {
+  const day = document.querySelector('input[name="optroute-day"]:checked')?.value;
+  if (!day) { alert('曜日を選択してください'); return; }
+
+  const excludeDepots = new Set(
+    [...document.querySelectorAll('input[name="optroute-exclude-depot"]:checked')].map(cb => cb.value)
+  );
+
+  const dayCol = DAY_DRIVER_COL[day];
+
+  // 1. 全デポの対象曜日の企業を収集
+  const allCompanies = [];
+  Object.entries(allData||{}).forEach(([depot, rows]) => {
+    if (excludeDepots.has(depot)) return;
+    rows.forEach(r => {
+      const drv = String(r[dayCol]||'').trim();
+      if (drv) allCompanies.push({...r, _depot: depot, _driver: drv});
+    });
+  });
+  if (!allCompanies.length) { alert(`${day}曜日の配送データがありません`); return; }
+
+  const drivers = [...new Set(allCompanies.map(c => c._driver))].filter(Boolean).sort();
+  const k = drivers.length;
+  if (k < 1) { alert('配送員が見つかりません'); return; }
+
+  // 2. 全企業をジオコード（ビル名除去）
+  showLoading(`住所を取得中 (0/${allCompanies.length}件)...`);
+  const addrCache = {};
+  for (let i = 0; i < allCompanies.length; i++) {
+    const c = allCompanies[i];
+    const addr = String(c['住所']||'').split(/[ 　]/)[0];
+    if (addr && addrCache[addr] === undefined) {
+      addrCache[addr] = null;
+      try { if (googleApiKey) { const r = await geocodeAddress(addr); if (r) addrCache[addr] = r; } } catch(e) {}
+    }
+    c.coords = addrCache[addr] || null;
+    document.getElementById('loading-text').textContent = `住所を取得中 (${i+1}/${allCompanies.length}件)...`;
+  }
+  hideLoading();
+
+  const geocoded = allCompanies.filter(c => c.coords);
+  if (geocoded.length < k) { alert('ジオコードできた企業数が配送員数より少ないため最適化できません'); return; }
+
+  // 3. k-means クラスタリング
+  const points = geocoded.map(c => c.coords);
+  const labels = kmeansCluster(points, k, 100);
+
+  const clusters = {};
+  geocoded.forEach((c, i) => {
+    if (!clusters[labels[i]]) clusters[labels[i]] = [];
+    clusters[labels[i]].push(c);
+  });
+
+  // 4. 各クラスタに最近傍デポを割り当て
+  showLoading('デポ座標を取得中...');
+  const depotNames = Object.keys(DEPOT_ADDRESSES).filter(d => !excludeDepots.has(d));
+  const depotCoordMap = {};
+  for (const dn of depotNames) {
+    try { const c = await geocodeAddress(DEPOT_ADDRESSES[dn]); if (c) depotCoordMap[dn] = c; } catch(e) {}
+  }
+  hideLoading();
+
+  const clusterList = Object.entries(clusters).map(([ci, comps]) => {
+    const centLat = comps.reduce((s,c) => s+c.coords[0], 0) / comps.length;
+    const centLon = comps.reduce((s,c) => s+c.coords[1], 0) / comps.length;
+    const centroid = [centLat, centLon];
+    let bestDepot = depotNames[0]; let minD = Infinity;
+    depotNames.forEach(dn => {
+      if (depotCoordMap[dn]) { const d = haversine(centroid, depotCoordMap[dn]); if (d < minD) { minD = d; bestDepot = dn; } }
+    });
+    return { centroid, depot: bestDepot, depotCoords: depotCoordMap[bestDepot]||centroid, companies: comps };
+  });
+
+  // 5. ドライバーをクラスタに割り当て（現デポとクラスタ重心の近さで貪欲マッチング）
+  const driverCurrentDepot = {};
+  drivers.forEach(drv => {
+    for (const [depot, rows] of Object.entries(allData||{})) {
+      if (rows.some(r => String(r[dayCol]||'').trim() === drv)) { driverCurrentDepot[drv] = depot; break; }
+    }
+  });
+
+  const assignedDrivers = new Set();
+  clusterList.forEach(cl => {
+    const dCoords = cl.depotCoords;
+    let bestDrv = null; let bestScore = Infinity;
+    drivers.forEach(drv => {
+      if (assignedDrivers.has(drv)) return;
+      const cur = depotCoordMap[driverCurrentDepot[drv]] || cl.centroid;
+      const score = haversine(dCoords, cur);
+      if (score < bestScore) { bestScore = score; bestDrv = drv; }
+    });
+    if (!bestDrv) bestDrv = drivers.find(d => !assignedDrivers.has(d)) || '未割当';
+    cl.driver = bestDrv;
+    assignedDrivers.add(bestDrv);
+  });
+
+  // 6. 各クラスタ内を貪欲最近傍でルート順序化し区間距離・総距離を算出
+  clusterList.forEach(cl => {
+    const remaining = cl.companies.slice();
+    const ordered = [];
+    let cur = cl.depotCoords;
+    while (remaining.length) {
+      let bi = 0; let bd = Infinity;
+      remaining.forEach((c, i) => { const d = haversine(cur, c.coords); if (d < bd) { bd = d; bi = i; } });
+      ordered.push({...remaining[bi], _legDist: bd});
+      cur = remaining[bi].coords;
+      remaining.splice(bi, 1);
+    }
+    cl.ordered = ordered;
+    cl.totalDist = ordered.reduce((s, c) => s + c._legDist, 0) + haversine(cur, cl.depotCoords);
+  });
+
+  clusterList.sort((a, b) => a.totalDist - b.totalDist);
+  renderOptRouteResult(clusterList, day);
+}
+
+function renderOptRouteResult(clusterList, day) {
+  const container = document.getElementById('optroute-result');
+  container.style.display = 'block';
+
+  const totalDist = clusterList.reduce((s, cl) => s + cl.totalDist, 0);
+  container.innerHTML = `
+    <div class="card" style="margin-bottom:16px;padding:12px 16px;background:var(--surface2);">
+      <div style="font-size:13px;color:var(--text3);">${day}曜日 — ${clusterList.length}名 ／ 全${clusterList.reduce((s,cl)=>s+cl.ordered.length,0)}件 ／ 総距離合計 <strong>${totalDist.toFixed(1)} km</strong></div>
+    </div>`;
+
+  clusterList.forEach(cl => {
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.marginBottom = '16px';
+
+    const currentDepot = driverCurrentDepot(cl.driver, day);
+    const depotChanged = currentDepot !== cl.depot;
+    const depotLabel = depotChanged
+      ? `<span style="color:#e07b00;">${currentDepot} → <strong>${cl.depot}</strong>（デポ変更）</span>`
+      : `<strong>${cl.depot}</strong>`;
+
+    const rows = cl.ordered.map((c, i) => `
+      <tr>
+        <td class="order-num">${i+1}</td>
+        <td>${c['企業名']||''}</td>
+        <td style="color:var(--text3);font-size:12px;">${String(c['住所']||'').substring(0,40)}</td>
+        <td style="font-size:11px;color:var(--text3);">${c._depot||''}</td>
+        <td><span class="dist-badge">${c._legDist.toFixed(1)} km</span></td>
+      </tr>`).join('');
+
+    card.innerHTML = `
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;flex-wrap:wrap;gap:8px;">
+        <div>
+          <span class="driver-cell" style="font-size:15px;">${cl.driver}</span>
+          <span style="margin-left:12px;font-size:12px;color:var(--text3);">推奨デポ: ${depotLabel}</span>
+        </div>
+        <div style="font-size:12px;color:var(--text3);">
+          担当 <strong>${cl.ordered.length}件</strong> ／ 総距離 <strong>${cl.totalDist.toFixed(1)} km</strong>
+        </div>
+      </div>
+      <div class="result-scroll">
+        <table class="result-table" style="min-width:640px;">
+          <thead><tr><th>#</th><th>企業名</th><th>住所</th><th>現デポ</th><th>区間距離</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
+    container.appendChild(card);
+  });
+
+  container.scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function driverCurrentDepot(drv, day) {
+  const dayCol = DAY_DRIVER_COL[day];
+  for (const [depot, rows] of Object.entries(allData||{})) {
+    if (rows.some(r => String(r[dayCol]||'').trim() === drv)) return depot;
+  }
+  return '不明';
 }
 </script>
 </body>
