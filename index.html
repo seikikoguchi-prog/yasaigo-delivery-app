@@ -966,10 +966,17 @@
           </div>
         </div>
         <div>
-          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">除外するデポ（複数選択可）</label>
-          <div id="optroute-exclude-depots" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:var(--surface2);border-radius:6px;min-height:36px;">
-            <span style="font-size:12px;color:var(--text3);">ファイル読み込み後に表示されます</span>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">1人あたり最大件数</label>
+          <div style="display:flex;align-items:center;gap:8px;">
+            <input type="number" id="optroute-max-per-driver" value="20" min="1" max="100" class="limit-input" style="width:70px;">
+            <span style="font-size:12px;color:var(--text3);">件（超過分は未割当）</span>
           </div>
+        </div>
+      </div>
+      <div style="margin-bottom:16px;">
+        <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">除外するデポ（複数選択可）</label>
+        <div id="optroute-exclude-depots" style="display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:var(--surface2);border-radius:6px;min-height:36px;">
+          <span style="font-size:12px;color:var(--text3);">ファイル読み込み後に表示されます</span>
         </div>
       </div>
       <div id="optroute-api-warning" style="display:none;margin-bottom:16px;padding:14px 16px;background:#fff3cd;border:1px solid #ffc107;border-radius:8px;font-size:13px;line-height:1.6;">
@@ -3586,6 +3593,8 @@ async function optimizeRoutes() {
   const excludeDepots = new Set(
     [...document.querySelectorAll('input[name="optroute-exclude-depot"]:checked')].map(cb => cb.value)
   );
+  const maxPerDriver = parseInt(document.getElementById('optroute-max-per-driver')?.value) || 20;
+  const MAX_ASSIGN_DIST_KM = 80; // ドライバーの現デポからこれ以上離れたデポは割り当てない
   const dayCol = DAY_DRIVER_COL[day];
 
   // 1. 全デポの企業を現デポ単位でまとめる
@@ -3670,15 +3679,39 @@ async function optimizeRoutes() {
     let bestDrv = null; let bestScore = Infinity;
     drivers.forEach(drv => {
       if (assignedDrivers.has(drv)) return;
-      const homeCoords = depotCoordMap[driverHomeDepot[drv]] || gCoords;
-      const score = haversine(gCoords, homeCoords);
-      if (score < bestScore) { bestScore = score; bestDrv = drv; }
+      const homeCoords = depotCoordMap[driverHomeDepot[drv]] || null;
+      if (!homeCoords) return; // デポ座標不明なドライバーはスキップ
+      const dist = haversine(gCoords, homeCoords);
+      if (dist > MAX_ASSIGN_DIST_KM) return; // 80km超は割り当て対象外
+      if (dist < bestScore) { bestScore = dist; bestDrv = drv; }
     });
-    if (!bestDrv) bestDrv = drivers.find(d => !assignedDrivers.has(d)) || '未割当';
+    // 80km以内に候補がいない場合は最も近いドライバーを使う（未割当より優先）
+    if (!bestDrv) {
+      drivers.forEach(drv => {
+        if (assignedDrivers.has(drv)) return;
+        const homeCoords = depotCoordMap[driverHomeDepot[drv]] || null;
+        if (!homeCoords) return;
+        const dist = haversine(gCoords, homeCoords);
+        if (dist < bestScore) { bestScore = dist; bestDrv = drv; }
+      });
+    }
+    if (!bestDrv) { cl.driver = '未割当'; cl.driverOrigDepot = cl.depot; return; }
     cl.driver = bestDrv;
     cl.driverOrigDepot = driverHomeDepot[bestDrv] || cl.depot;
     assignedDrivers.add(bestDrv);
   });
+
+  // 最大件数を超えるグループを分割し超過分を未割当グループへ
+  const overflowCompanies = [];
+  groups.forEach(cl => {
+    if (cl.companies.length > maxPerDriver) {
+      overflowCompanies.push(...cl.companies.splice(maxPerDriver));
+    }
+  });
+  if (overflowCompanies.length > 0) {
+    groups.push({ depot: '未割当', driver: '未割当', driverOrigDepot: '未割当',
+      companies: overflowCompanies, depotCoords: null, totalDist: 0, orderedCompanies: overflowCompanies });
+  }
 
   // 5. 各グループの企業住所をジオコードして正確な距離を計算
   if (googleApiKey) {
