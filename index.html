@@ -3291,17 +3291,20 @@ async function buildNewRoutes() {
     // 各企業住所をジオコードしてデポからの距離を計算
     showLoading(`${day}曜日の企業住所を取得中...`);
     const geocoded = [];
-    // 住所の重複を減らすためにキャッシュ
+    // 住所の重複を減らすためにキャッシュ（ビル名除去したキーで管理）
     const addrCache = {};
     for (const r of samePrefRows) {
-      const addr = String(r['住所']||'');
-      if (!addrCache[addr]) {
+      // ビル名・階数を除いた番地部分のみ使用（geocodeAll と同じ処理）
+      const rawAddr = String(r['住所']||'');
+      const addr = rawAddr.split(/[ 　]/)[0]; // 半角・全角スペース前まで
+      if (addrCache[addr] === undefined) {
+        addrCache[addr] = null;
         try {
           if (addr && googleApiKey) {
-            addrCache[addr] = await geocodeAddress(addr);
+            const c = await geocodeAddress(addr);
+            if (c) addrCache[addr] = c;
           }
         } catch(e) {}
-        if (!addrCache[addr]) addrCache[addr] = null;
       }
       const coords = addrCache[addr];
       const dist = coords ? haversine(depotCoords, coords) : 99999;
