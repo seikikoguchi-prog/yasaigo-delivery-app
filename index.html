@@ -3224,6 +3224,20 @@ function buildNewRoutes() {
 
   if (!targetDays.length) { alert('追加する曜日を選択してください'); return; }
 
+  // 引き継ぎ行の住所から都道府県・市区町村を抽出
+  function extractPref(addr) {
+    const m = String(addr||'').match(/^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)/);
+    return m ? m[1] : '';
+  }
+  function extractCity(addr) {
+    const m = String(addr||'').match(/^(?:東京都|北海道|(?:京都|大阪)府|.{2,3}県)(.{2,5}[市区町村])/);
+    return m ? m[1] : '';
+  }
+
+  const handoverAddrs = handoverState.handoverRows.map(r => String(r['住所']||''));
+  const handoverPrefs = [...new Set(handoverAddrs.map(extractPref).filter(Boolean))];
+  const handoverCities = [...new Set(handoverAddrs.map(extractCity).filter(Boolean))];
+
   // 新人の既存エリアの重心（引き継ぎ分でcoords付きのもの）
   const existingWithCoords = handoverState.handoverRows.filter(r => r.coords && r.coords[0]);
   let centroid = BASE;
@@ -3239,7 +3253,7 @@ function buildNewRoutes() {
 
   targetDays.forEach(day => {
     // その曜日の全行（新人以外・全デポ対象）
-    const allDayRows = (effectiveRows[day]||[]).map(r => ({
+    let allDayRows = (effectiveRows[day]||[]).map(r => ({
       ...r,
       _driver: _getDriverForDay(r, day),
     })).filter(r => r._driver && r._driver !== toDriver);
@@ -3249,25 +3263,44 @@ function buildNewRoutes() {
       return;
     }
 
-    // coords があれば距離ソート、なければドライバー均等のみ
-    const hasCoords = allDayRows.some(r => r.coords && r.coords[0]);
+    // ① 同都道府県でさらに同市区町村に絞り込む（段階的フィルタ）
+    const sameCity = handoverPrefs.length
+      ? allDayRows.filter(r => {
+          const pref = extractPref(r['住所']||'');
+          const city = extractCity(r['住所']||'');
+          return handoverPrefs.includes(pref) && (handoverCities.length === 0 || handoverCities.includes(city));
+        })
+      : [];
+
+    const samePref = handoverPrefs.length
+      ? allDayRows.filter(r => handoverPrefs.includes(extractPref(r['住所']||'')))
+      : allDayRows;
+
+    // 同市区町村が目標件数以上あればそこから、なければ同都道府県全体から
+    const pool = sameCity.length >= targetCount ? sameCity : (samePref.length > 0 ? samePref : allDayRows);
+
+    // ② coords があれば距離ソート
+    const hasCoords = pool.some(r => r.coords && r.coords[0]);
     let sorted;
     if (hasCoords) {
-      sorted = allDayRows
+      sorted = pool
         .filter(r => r.coords && r.coords[0])
         .map(r => ({...r, _distToCentroid: haversine(centroid, r.coords)}))
         .sort((a,b) => a._distToCentroid - b._distToCentroid);
-      // coords なし行を末尾に追加
-      allDayRows.filter(r => !r.coords || !r.coords[0]).forEach(r => {
+      pool.filter(r => !r.coords || !r.coords[0]).forEach(r => {
         sorted.push({...r, _distToCentroid: 99999});
       });
     } else {
-      // coords未取得時はドライバー名順
-      sorted = allDayRows.map(r => ({...r, _distToCentroid: 0}))
-        .sort((a,b) => a._driver.localeCompare(b._driver, 'ja'));
+      // coords未取得時：市区町村一致を優先、次に都道府県一致
+      sorted = pool.map(r => {
+        const city = extractCity(r['住所']||'');
+        const pref = extractPref(r['住所']||'');
+        const priority = handoverCities.includes(city) ? 0 : (handoverPrefs.includes(pref) ? 1 : 2);
+        return {...r, _distToCentroid: 0, _priority: priority};
+      }).sort((a,b) => a._priority - b._priority || a._driver.localeCompare(b._driver, 'ja'));
     }
 
-    // 各配送員から最大2件まで均等抽出
+    // ③ 各配送員から最大2件まで均等抽出
     const driverCount = {};
     const selected = [];
     for (const r of sorted) {
@@ -3281,7 +3314,7 @@ function buildNewRoutes() {
     if (selected.length < targetCount) {
       for (const r of sorted) {
         if (selected.length >= targetCount) break;
-        if (!selected.find(s => s['企業名']===r['企業名'] && s._handoverDay===r._handoverDay)) selected.push(r);
+        if (!selected.find(s => s['企業名']===r['企業名'])) selected.push(r);
       }
     }
 
