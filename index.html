@@ -459,6 +459,7 @@
     <div class="nav-btns">
       <button class="btn btn-outline" id="btn-step1-next" onclick="goStep(2)" disabled>割り振り設定へ →</button>
       <button class="btn btn-outline" id="btn-step1-absence" onclick="goStep(6)" disabled style="margin-left:auto;">🌿 配送員お休み振り分け →</button>
+      <button class="btn btn-outline" id="btn-step1-handover" onclick="goStep(7); initHandoverStep()" disabled>👤 ドライバー交代・ルート構築 →</button>
       <button class="btn btn-primary" id="btn-step1-assign" onclick="goStep(5)" disabled>＋ 新規企業をアサインする →</button>
     </div>
   </div>
@@ -1181,6 +1182,8 @@ function parseWorkbook() {
   document.getElementById('btn-step1-assign').disabled = false;
   const absBtn = document.getElementById('btn-step1-absence');
   if (absBtn) absBtn.disabled = false;
+  const handoverBtn = document.getElementById('btn-step1-handover');
+  if (handoverBtn) handoverBtn.disabled = false;
 }
 
 function selectDepot(depot, btn) {
@@ -3193,10 +3196,9 @@ function buildNewRoutes() {
   handoverState.newRouteRows = {};
 
   targetDays.forEach(day => {
-    // その曜日の全行（新人以外・同デポ）
+    // その曜日の全行（新人以外・全デポ対象）
     const candidates = (allocationResult[day]||[]).filter(r =>
       r._driver !== toDriver &&
-      r['デポ'] === depot &&
       r.coords && r.coords[0]
     );
 
