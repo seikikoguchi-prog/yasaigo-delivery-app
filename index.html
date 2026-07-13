@@ -593,6 +593,7 @@
 
     <div class="nav-btns">
       <button class="btn btn-outline" onclick="goStep(3)">← 条件を変更</button>
+      <button class="btn btn-outline" onclick="goStep(7); initHandoverStep()">👤 ドライバー交代・ルート構築</button>
       <button class="btn btn-primary" onclick="goStep(5)" style="margin-left:auto;">＋ 新規企業を追加</button>
       <button class="btn btn-outline" onclick="goStep(1)">最初からやり直す</button>
     </div>
@@ -841,6 +842,93 @@
 
     <div class="nav-btns">
       <button class="btn btn-outline" onclick="goStep(1)">← 最初に戻る</button>
+    </div>
+  </div>
+
+  <!-- STEP 7: ドライバー交代・ルート構築 -->
+  <div class="step" id="step-7">
+    <div class="step-header">
+      <div class="step-label">ドライバー交代・ルート構築</div>
+      <div class="step-title">離脱ドライバーの引き継ぎと<strong>新人のルートを自動構築</strong></div>
+    </div>
+
+    <!-- Section A: 引き継ぎ設定 -->
+    <div class="card">
+      <div class="card-title">① 担当引き継ぎ（既存曜日）</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">デポ</label>
+          <select id="handover-depot" class="select-styled" style="width:100%;" onchange="onHandoverDepotChange()"></select>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">離脱する配送員</label>
+          <select id="handover-from" class="select-styled" style="width:100%;"></select>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">後任の配送員名</label>
+          <input type="text" id="handover-to" placeholder="例: 新人A" class="search-input" style="width:100%;padding:8px 12px;">
+        </div>
+      </div>
+      <div id="handover-preview" style="display:none;margin-bottom:12px;">
+        <div style="font-size:12px;color:var(--text3);margin-bottom:8px;" id="handover-preview-label"></div>
+        <div class="result-scroll">
+          <table class="result-table" style="min-width:600px;">
+            <thead><tr><th>#</th><th>企業名</th><th>住所</th><th>曜日</th><th>指定</th></tr></thead>
+            <tbody id="handover-preview-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="previewHandover()">引き継ぎ内容を確認</button>
+    </div>
+
+    <!-- Section B: 新規曜日ルート構築 -->
+    <div class="card" style="margin-top:16px;">
+      <div class="card-title">② 新規曜日のルート構築（他の配送員から抽出）</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">後任配送員名</label>
+          <input type="text" id="newroute-driver" placeholder="例: 新人A" class="search-input" style="width:100%;padding:8px 12px;">
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">追加する曜日</label>
+          <div style="display:flex;gap:8px;margin-top:4px;">
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="newroute-mon" value="月"> 月</label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="newroute-tue" value="火"> 火</label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="newroute-wed" value="水"> 水</label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:4px;"><input type="checkbox" id="newroute-thu" value="木"> 木</label>
+          </div>
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--text3);display:block;margin-bottom:6px;">目標件数（曜日ごと）</label>
+          <input type="number" id="newroute-count" value="7" min="1" max="30" class="limit-input" style="width:70px;">
+          <span style="font-size:12px;color:var(--text3);margin-left:4px;">件</span>
+        </div>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">※ 新人の既存担当エリア（引き継ぎ分）に地理的に近い企業を、各配送員から均等に抽出します</div>
+      <button class="btn btn-primary" onclick="buildNewRoutes()">ルートを自動構築</button>
+
+      <div id="newroute-result" style="display:none;margin-top:20px;">
+        <div class="card-title">構築結果</div>
+        <div id="newroute-day-tabs" style="display:flex;gap:4px;margin-bottom:16px;"></div>
+        <div class="result-scroll">
+          <table class="result-table" style="min-width:700px;">
+            <thead><tr><th>#</th><th>企業名</th><th>住所</th><th>元の担当</th><th>距離(km)</th></tr></thead>
+            <tbody id="newroute-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ダウンロード -->
+    <div class="card" style="margin-top:16px;" id="handover-download-card" style="display:none;">
+      <div class="card-title">③ Excelに反映して出力</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px;">引き継ぎ・新規ルートの変更を反映した最終調整シート形式でダウンロードします</div>
+      <button class="btn btn-primary" onclick="downloadHandoverExcel()">⬇ 変更反映済みExcelをダウンロード</button>
+    </div>
+
+    <div class="nav-btns">
+      <button class="btn btn-outline" onclick="goStep(4)">← 結果に戻る</button>
+      <button class="btn btn-outline" onclick="goStep(1)">最初からやり直す</button>
     </div>
   </div>
 
@@ -2970,6 +3058,324 @@ function downloadAbsenceExcel() {
   const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
   const safeDepot = res.depot.replace(/[\\/:*?"<>|【】（）\(\)\[\]]/g,'');
   XLSX.writeFile(wb2, `お休み振り分け_${safeDepot}_${res.day}曜_${today}.xlsx`);
+}
+
+// =====================================================
+// ===== Step 7: ドライバー交代・ルート構築 =====
+// =====================================================
+
+// Step7の状態
+let handoverState = {
+  depot: null,
+  fromDriver: null,
+  toDriver: null,
+  handoverRows: [],      // 引き継ぎ対象行
+  newRouteRows: {},      // {曜日: [行...]}
+};
+
+function initHandoverStep() {
+  // デポセレクト初期化（allocationResultから取得）
+  const depotSel = document.getElementById('handover-depot');
+  if (!depotSel) return;
+  depotSel.innerHTML = '';
+
+  // allocationResult内のデポ一覧
+  const depots = new Set();
+  Object.values(allocationResult||{}).forEach(rows => rows.forEach(r => {
+    if (r['デポ']) depots.add(r['デポ']);
+  }));
+  // depotDataからも取得
+  if (selectedDepot) depots.add(selectedDepot);
+
+  [...depots].sort().forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d; opt.textContent = d;
+    if (d === selectedDepot) opt.selected = true;
+    depotSel.appendChild(opt);
+  });
+  onHandoverDepotChange();
+}
+
+function onHandoverDepotChange() {
+  const depot = document.getElementById('handover-depot')?.value;
+  const fromSel = document.getElementById('handover-from');
+  if (!fromSel) return;
+  fromSel.innerHTML = '';
+
+  // 選択デポの配送員一覧
+  const drivers = new Set();
+  Object.values(allocationResult||{}).forEach(rows => rows.forEach(r => {
+    if (r['デポ'] === depot && r._driver) drivers.add(r._driver);
+  }));
+  [...drivers].sort().forEach(d => {
+    const opt = document.createElement('option');
+    opt.value = d; opt.textContent = d;
+    fromSel.appendChild(opt);
+  });
+  document.getElementById('handover-preview').style.display = 'none';
+}
+
+function previewHandover() {
+  const depot = document.getElementById('handover-depot')?.value;
+  const fromDriver = document.getElementById('handover-from')?.value;
+  const toDriver = document.getElementById('handover-to')?.value.trim();
+
+  if (!fromDriver) { alert('離脱する配送員を選択してください'); return; }
+  if (!toDriver) { alert('後任の配送員名を入力してください'); return; }
+
+  // 引き継ぎ対象行を収集
+  const rows = [];
+  const dayLabels = [];
+  ['月','火','水','木'].forEach(day => {
+    (allocationResult[day]||[]).forEach(r => {
+      if (r['デポ'] === depot && r._driver === fromDriver) {
+        rows.push({...r, _handoverDay: day});
+        if (!dayLabels.includes(day)) dayLabels.push(day);
+      }
+    });
+  });
+
+  handoverState.depot = depot;
+  handoverState.fromDriver = fromDriver;
+  handoverState.toDriver = toDriver;
+  handoverState.handoverRows = rows;
+
+  // プレビュー表示
+  const tbody = document.getElementById('handover-preview-tbody');
+  tbody.innerHTML = '';
+  rows.forEach((r, i) => {
+    const isAM = String(r['時間指定']||'').includes('午前');
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="order-num">${i+1}</td>
+      <td>${r['企業名']||''}</td>
+      <td style="color:var(--text3);">${String(r['住所']||'').substring(0,40)}</td>
+      <td>${r._handoverDay}</td>
+      <td>${isAM?'<span class="am-badge">★ 午前</span>':''}</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  const label = document.getElementById('handover-preview-label');
+  label.innerHTML = `<strong>${fromDriver}</strong> → <span style="color:var(--accent);font-weight:600;">${toDriver}</span> に引き継ぎ：${dayLabels.join('・')}曜 計 <strong>${rows.length} 件</strong>`;
+  document.getElementById('handover-preview').style.display = 'block';
+  document.getElementById('handover-download-card').style.display = '';
+
+  // 新規ルート欄にも後任名をコピー
+  const nr = document.getElementById('newroute-driver');
+  if (nr && !nr.value) nr.value = toDriver;
+}
+
+function buildNewRoutes() {
+  const toDriver = document.getElementById('newroute-driver')?.value.trim();
+  if (!toDriver) { alert('後任の配送員名を入力してください'); return; }
+
+  const targetCount = parseInt(document.getElementById('newroute-count')?.value||'7', 10) || 7;
+  const depot = document.getElementById('handover-depot')?.value;
+
+  const targetDays = ['月','火','水','木'].filter(d => {
+    const id = {月:'mon',火:'tue',水:'wed',木:'thu'}[d];
+    return document.getElementById(`newroute-${id}`)?.checked;
+  });
+
+  if (!targetDays.length) { alert('追加する曜日を選択してください'); return; }
+
+  // 新人の既存エリアの重心を計算（引き継ぎ分 or 既存割り当て分）
+  const existingRows = handoverState.handoverRows.filter(r => r.coords && r.coords[0]);
+  let centroid = BASE;
+  if (existingRows.length) {
+    centroid = [
+      existingRows.reduce((s,r)=>s+r.coords[0],0)/existingRows.length,
+      existingRows.reduce((s,r)=>s+r.coords[1],0)/existingRows.length,
+    ];
+  }
+
+  handoverState.newRouteRows = {};
+
+  targetDays.forEach(day => {
+    // その曜日の全行（新人以外・同デポ）
+    const candidates = (allocationResult[day]||[]).filter(r =>
+      r._driver !== toDriver &&
+      r['デポ'] === depot &&
+      r.coords && r.coords[0]
+    );
+
+    if (!candidates.length) {
+      handoverState.newRouteRows[day] = [];
+      return;
+    }
+
+    // 重心からの距離でソート
+    const withDist = candidates.map(r => ({
+      ...r,
+      _distToCentroid: haversine(centroid, r.coords),
+    })).sort((a,b) => a._distToCentroid - b._distToCentroid);
+
+    // 各配送員から最大2件まで均等抽出
+    const driverCount = {};
+    const selected = [];
+    for (const r of withDist) {
+      if (selected.length >= targetCount) break;
+      const drv = r._driver;
+      if ((driverCount[drv]||0) >= 2) continue;
+      driverCount[drv] = (driverCount[drv]||0) + 1;
+      selected.push(r);
+    }
+    // 足りない場合は制限を外して補充
+    if (selected.length < targetCount) {
+      for (const r of withDist) {
+        if (selected.length >= targetCount) break;
+        if (!selected.includes(r)) selected.push(r);
+      }
+    }
+
+    handoverState.newRouteRows[day] = selected;
+  });
+
+  renderNewRouteResult(targetDays[0]);
+  document.getElementById('newroute-result').style.display = 'block';
+  document.getElementById('handover-download-card').style.display = '';
+  document.getElementById('newroute-result').scrollIntoView({behavior:'smooth', block:'start'});
+}
+
+function renderNewRouteResult(day) {
+  // タブ
+  const tabs = document.getElementById('newroute-day-tabs');
+  tabs.innerHTML = '';
+  Object.keys(handoverState.newRouteRows).forEach(d => {
+    const btn = document.createElement('button');
+    btn.className = 'day-tab' + (d===day?' active':'');
+    const cnt = (handoverState.newRouteRows[d]||[]).length;
+    btn.textContent = `${d}曜（${cnt}件）`;
+    btn.onclick = () => renderNewRouteResult(d);
+    tabs.appendChild(btn);
+  });
+
+  // テーブル
+  const tbody = document.getElementById('newroute-tbody');
+  tbody.innerHTML = '';
+  const rows = handoverState.newRouteRows[day] || [];
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3);">対象企業がありません</td></tr>';
+    return;
+  }
+  rows.forEach((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="order-num">${i+1}</td>
+      <td>${r['企業名']||''}</td>
+      <td style="color:var(--text3);">${String(r['住所']||'').substring(0,40)}</td>
+      <td><span class="driver-cell">${r._driver||''}</span></td>
+      <td><span class="dist-badge">${(r._distToCentroid||0).toFixed(1)} km</span></td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+function downloadHandoverExcel() {
+  if (!handoverState.toDriver) {
+    alert('先に「引き継ぎ内容を確認」を実行してください');
+    return;
+  }
+
+  // allocationResultのコピーに変更を反映
+  const updated = JSON.parse(JSON.stringify(allocationResult));
+
+  // ① 引き継ぎ：fromDriver → toDriver
+  const from = handoverState.fromDriver;
+  const to = handoverState.toDriver;
+  ['月','火','水','木'].forEach(day => {
+    (updated[day]||[]).forEach(r => {
+      if (r['デポ'] === handoverState.depot && r._driver === from) {
+        r._origDriver = from;
+        r._driver = to;
+        r._changed = true;
+      }
+    });
+  });
+
+  // ② 新規ルート：他ドライバー → toDriver
+  Object.entries(handoverState.newRouteRows).forEach(([day, rows]) => {
+    rows.forEach(nr => {
+      const target = (updated[day]||[]).find(r =>
+        r['ID'] === nr['ID'] && r['企業名'] === nr['企業名']
+      );
+      if (target) {
+        target._origDriver = target._driver;
+        target._driver = to;
+        target._changed = true;
+      }
+    });
+  });
+
+  // Excel出力（最終調整レイアウト形式）
+  const wb2 = XLSX.utils.book_new();
+  const COLS = ['ID','企業名','住所','デポ','稼働ステータス','月','火','水','木','曜日',
+    null,'デポ変更企業','変更後デポ（確定後追加）','配送員予定（月）','配送員予定（火）',
+    '配送員予定（水）','配送員予定（木）','備考1','備考2','時間指定'];
+
+  const allRows = [];
+  const seen = new Set();
+  ['月','火','水','木'].forEach(day => {
+    (updated[day]||[]).forEach(r => {
+      const key = String(r['ID']||r['企業名']);
+      if (!seen.has(key)) { seen.add(key); allRows.push(r); }
+    });
+  });
+
+  const header = COLS.map(c => c||'');
+  const data = [header];
+  allRows.forEach(r => {
+    const days = ['月','火','水','木'].filter(d =>
+      (updated[d]||[]).some(row => String(row['ID']||row['企業名']) === String(r['ID']||r['企業名']))
+    );
+    const dayStr = days.join('');
+    data.push([
+      r['ID']||'', r['企業名']||'', r['住所']||'', r['デポ']||'', '導入中',
+      days.includes('月')?'○':'', days.includes('火')?'○':'',
+      days.includes('水')?'○':'', days.includes('木')?'○':'',
+      dayStr, '',
+      r['デポ']||'', r['デポ']||'',
+      days.includes('月') ? (updated['月']||[]).find(row=>String(row['ID']||row['企業名'])===String(r['ID']||r['企業名']))?._driver||'' : '',
+      days.includes('火') ? (updated['火']||[]).find(row=>String(row['ID']||row['企業名'])===String(r['ID']||r['企業名']))?._driver||'' : '',
+      days.includes('水') ? (updated['水']||[]).find(row=>String(row['ID']||row['企業名'])===String(r['ID']||r['企業名']))?._driver||'' : '',
+      days.includes('木') ? (updated['木']||[]).find(row=>String(row['ID']||row['企業名'])===String(r['ID']||r['企業名']))?._driver||'' : '',
+      r['備考1']||'', r['備考2']||'', r['時間指定']||'',
+    ]);
+  });
+
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [8,28,40,12,10,4,4,4,4,8,4,12,14,22,22,22,22,18,18,12].map(w=>({wch:w}));
+
+  // 変更行を黄色ハイライト
+  data.forEach((row, i) => {
+    if (i === 0) return;
+    const origRow = allRows[i-1];
+    if (origRow && origRow._changed) {
+      COLS.forEach((_, ci) => {
+        const cellRef = XLSX.utils.encode_cell({r:i, c:ci});
+        if (!ws[cellRef]) ws[cellRef] = {v:'', t:'s'};
+        ws[cellRef].s = { fill: { fgColor: { rgb: 'FFFBE0' } } };
+      });
+    }
+  });
+
+  XLSX.utils.book_append_sheet(wb2, ws, '最終調整（更新後）');
+
+  // 変更サマリーシート
+  const summary = [['変更種別','配送員（元）','配送員（後）','企業名','住所','曜日']];
+  handoverState.handoverRows.forEach(r => {
+    summary.push(['引き継ぎ', from, to, r['企業名']||'', r['住所']||'', r._handoverDay]);
+  });
+  Object.entries(handoverState.newRouteRows).forEach(([day, rows]) => {
+    rows.forEach(r => summary.push(['新規ルート抽出', r._driver||'', to, r['企業名']||'', r['住所']||'', day]));
+  });
+  const ws2 = XLSX.utils.aoa_to_sheet(summary);
+  ws2['!cols'] = [14,22,22,28,40,6].map(w=>({wch:w}));
+  XLSX.utils.book_append_sheet(wb2, ws2, '変更サマリー');
+
+  const today = new Date().toISOString().slice(0,10).replace(/-/g,'');
+  XLSX.writeFile(wb2, `ドライバー交代_${to}_${today}.xlsx`);
 }
 </script>
 </body>
