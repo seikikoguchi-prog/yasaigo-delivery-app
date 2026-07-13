@@ -3076,21 +3076,57 @@ let handoverState = {
   newRouteRows: {},      // {曜日: [行...]}
 };
 
+const DAY_DRIVER_COL = {月:'配送員予定（月）',火:'配送員予定（火）',水:'配送員予定（水）',木:'配送員予定（木）'};
+
+// allDataまたはallocationResultからその行の担当者を返すヘルパー
+function _getDriverForDay(r, day) {
+  // allocationResult由来の行は _driver がある
+  if (r._driver) return r._driver;
+  // allData由来の行は配送員予定列を参照
+  return String(r[DAY_DRIVER_COL[day]]||'').trim();
+}
+
+// allDataから全曜日のフラット行リストを生成（allocationResult形式に近い）
+function _buildRowsFromAllData() {
+  const result = {月:[],火:[],水:[],木:[]};
+  Object.values(allData||{}).forEach(depotRows => {
+    depotRows.forEach(r => {
+      ['月','火','水','木'].forEach(day => {
+        const mark = String(r[day]||'');
+        if (mark !== '○' && mark !== '〇') return;
+        const drv = String(r[DAY_DRIVER_COL[day]]||'').trim();
+        result[day].push({
+          ...r,
+          _driver: drv,
+          coords: r.coords || null,
+          baseDist: r.baseDist || 0,
+          isAM: String(r['時間指定']||'').includes('午前'),
+        });
+      });
+    });
+  });
+  return result;
+}
+
+function _getEffectiveRows() {
+  // allocationResultが使えればそちらを優先
+  const hasAlloc = Object.values(allocationResult||{}).some(a => a.length > 0);
+  return hasAlloc ? allocationResult : _buildRowsFromAllData();
+}
+
 function initHandoverStep() {
-  // デポセレクト初期化（allocationResultから取得）
   const depotSel = document.getElementById('handover-depot');
   if (!depotSel) return;
   depotSel.innerHTML = '';
 
-  // allocationResult内のデポ一覧
-  const depots = new Set();
-  Object.values(allocationResult||{}).forEach(rows => rows.forEach(r => {
-    if (r['デポ']) depots.add(r['デポ']);
-  }));
-  // depotDataからも取得
-  if (selectedDepot) depots.add(selectedDepot);
-
-  [...depots].sort().forEach(d => {
+  // allDataから全デポ一覧を取得（常に利用可能）
+  const depots = Object.keys(allData||{}).sort();
+  if (!depots.length) {
+    alert('先にExcelファイルを読み込んでください');
+    goStep(1);
+    return;
+  }
+  depots.forEach(d => {
     const opt = document.createElement('option');
     opt.value = d; opt.textContent = d;
     if (d === selectedDepot) opt.selected = true;
@@ -3105,12 +3141,15 @@ function onHandoverDepotChange() {
   if (!fromSel) return;
   fromSel.innerHTML = '';
 
-  // 選択デポの配送員一覧
-  const drivers = new Set();
-  Object.values(allocationResult||{}).forEach(rows => rows.forEach(r => {
-    if (r['デポ'] === depot && r._driver) drivers.add(r._driver);
-  }));
-  [...drivers].sort().forEach(d => {
+  // allDataから選択デポの配送員一覧を取得
+  const driversSet = new Set();
+  (allData[depot]||[]).forEach(r => {
+    ['月','火','水','木'].forEach(day => {
+      const drv = String(r[DAY_DRIVER_COL[day]]||'').trim();
+      if (drv) driversSet.add(drv);
+    });
+  });
+  [...driversSet].sort().forEach(d => {
     const opt = document.createElement('option');
     opt.value = d; opt.textContent = d;
     fromSel.appendChild(opt);
@@ -3126,13 +3165,16 @@ function previewHandover() {
   if (!fromDriver) { alert('離脱する配送員を選択してください'); return; }
   if (!toDriver) { alert('後任の配送員名を入力してください'); return; }
 
-  // 引き継ぎ対象行を収集
+  // allDataから引き継ぎ対象行を収集
   const rows = [];
   const dayLabels = [];
+  const effectiveRows = _getEffectiveRows();
   ['月','火','水','木'].forEach(day => {
-    (allocationResult[day]||[]).forEach(r => {
-      if (r['デポ'] === depot && r._driver === fromDriver) {
-        rows.push({...r, _handoverDay: day});
+    (effectiveRows[day]||[]).forEach(r => {
+      const drv = _getDriverForDay(r, day);
+      const rowDepot = r['_depot_actual'] || r['デポ'] || '';
+      if (rowDepot === depot && drv === fromDriver) {
+        rows.push({...r, _driver: drv, _handoverDay: day});
         if (!dayLabels.includes(day)) dayLabels.push(day);
       }
     });
@@ -3174,7 +3216,6 @@ function buildNewRoutes() {
   if (!toDriver) { alert('後任の配送員名を入力してください'); return; }
 
   const targetCount = parseInt(document.getElementById('newroute-count')?.value||'7', 10) || 7;
-  const depot = document.getElementById('handover-depot')?.value;
 
   const targetDays = ['月','火','水','木'].filter(d => {
     const id = {月:'mon',火:'tue',水:'wed',木:'thu'}[d];
@@ -3183,51 +3224,64 @@ function buildNewRoutes() {
 
   if (!targetDays.length) { alert('追加する曜日を選択してください'); return; }
 
-  // 新人の既存エリアの重心を計算（引き継ぎ分 or 既存割り当て分）
-  const existingRows = handoverState.handoverRows.filter(r => r.coords && r.coords[0]);
+  // 新人の既存エリアの重心（引き継ぎ分でcoords付きのもの）
+  const existingWithCoords = handoverState.handoverRows.filter(r => r.coords && r.coords[0]);
   let centroid = BASE;
-  if (existingRows.length) {
+  if (existingWithCoords.length) {
     centroid = [
-      existingRows.reduce((s,r)=>s+r.coords[0],0)/existingRows.length,
-      existingRows.reduce((s,r)=>s+r.coords[1],0)/existingRows.length,
+      existingWithCoords.reduce((s,r)=>s+r.coords[0],0)/existingWithCoords.length,
+      existingWithCoords.reduce((s,r)=>s+r.coords[1],0)/existingWithCoords.length,
     ];
   }
 
+  const effectiveRows = _getEffectiveRows();
   handoverState.newRouteRows = {};
 
   targetDays.forEach(day => {
     // その曜日の全行（新人以外・全デポ対象）
-    const candidates = (allocationResult[day]||[]).filter(r =>
-      r._driver !== toDriver &&
-      r.coords && r.coords[0]
-    );
+    const allDayRows = (effectiveRows[day]||[]).map(r => ({
+      ...r,
+      _driver: _getDriverForDay(r, day),
+    })).filter(r => r._driver && r._driver !== toDriver);
 
-    if (!candidates.length) {
+    if (!allDayRows.length) {
       handoverState.newRouteRows[day] = [];
       return;
     }
 
-    // 重心からの距離でソート
-    const withDist = candidates.map(r => ({
-      ...r,
-      _distToCentroid: haversine(centroid, r.coords),
-    })).sort((a,b) => a._distToCentroid - b._distToCentroid);
+    // coords があれば距離ソート、なければドライバー均等のみ
+    const hasCoords = allDayRows.some(r => r.coords && r.coords[0]);
+    let sorted;
+    if (hasCoords) {
+      sorted = allDayRows
+        .filter(r => r.coords && r.coords[0])
+        .map(r => ({...r, _distToCentroid: haversine(centroid, r.coords)}))
+        .sort((a,b) => a._distToCentroid - b._distToCentroid);
+      // coords なし行を末尾に追加
+      allDayRows.filter(r => !r.coords || !r.coords[0]).forEach(r => {
+        sorted.push({...r, _distToCentroid: 99999});
+      });
+    } else {
+      // coords未取得時はドライバー名順
+      sorted = allDayRows.map(r => ({...r, _distToCentroid: 0}))
+        .sort((a,b) => a._driver.localeCompare(b._driver, 'ja'));
+    }
 
     // 各配送員から最大2件まで均等抽出
     const driverCount = {};
     const selected = [];
-    for (const r of withDist) {
+    for (const r of sorted) {
       if (selected.length >= targetCount) break;
       const drv = r._driver;
       if ((driverCount[drv]||0) >= 2) continue;
       driverCount[drv] = (driverCount[drv]||0) + 1;
       selected.push(r);
     }
-    // 足りない場合は制限を外して補充
+    // 足りなければ制限を外して補充
     if (selected.length < targetCount) {
-      for (const r of withDist) {
+      for (const r of sorted) {
         if (selected.length >= targetCount) break;
-        if (!selected.includes(r)) selected.push(r);
+        if (!selected.find(s => s['企業名']===r['企業名'] && s._handoverDay===r._handoverDay)) selected.push(r);
       }
     }
 
