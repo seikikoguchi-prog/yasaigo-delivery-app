@@ -3272,7 +3272,7 @@ async function buildNewRoutes() {
   const effectiveRows = _getEffectiveRows();
   handoverState.newRouteRows = {};
 
-  targetDays.forEach(day => {
+  for (const day of targetDays) {
     let allDayRows = (effectiveRows[day]||[]).map(r => ({
       ...r,
       _driver: _getDriverForDay(r, day),
@@ -3285,28 +3285,31 @@ async function buildNewRoutes() {
 
     if (!samePrefRows.length) {
       handoverState.newRouteRows[day] = [];
-      return;
+      continue;
     }
 
-    // coords があればデポからの距離でソート、なければ住所文字列の市区町村で近似ソート
-    const hasCoords = samePrefRows.some(r => r.coords && r.coords[0]);
-    let sorted;
-    if (hasCoords) {
-      sorted = samePrefRows
-        .filter(r => r.coords && r.coords[0])
-        .map(r => ({...r, _distToCentroid: haversine(depotCoords, r.coords)}))
-        .sort((a,b) => a._distToCentroid - b._distToCentroid);
-      samePrefRows.filter(r => !r.coords || !r.coords[0]).forEach(r => {
-        sorted.push({...r, _distToCentroid: 99999});
-      });
-    } else {
-      // 住所の市区町村をデポ住所と比較して近いものを優先
-      const depotCity = String(depotAddr).match(/^(?:東京都|北海道|(?:京都|大阪)府|.{2,3}県)(.{2,5}[市区町村])/)?.[1] || '';
-      sorted = samePrefRows.map(r => {
-        const city = String(r['住所']||'').match(/^(?:東京都|北海道|(?:京都|大阪)府|.{2,3}県)(.{2,5}[市区町村])/)?.[1] || '';
-        return {...r, _distToCentroid: 0, _sameCity: city === depotCity ? 0 : 1};
-      }).sort((a,b) => a._sameCity - b._sameCity || a._driver.localeCompare(b._driver, 'ja'));
+    // 各企業住所をジオコードしてデポからの距離を計算
+    showLoading(`${day}曜日の企業住所を取得中...`);
+    const geocoded = [];
+    // 住所の重複を減らすためにキャッシュ
+    const addrCache = {};
+    for (const r of samePrefRows) {
+      const addr = String(r['住所']||'');
+      if (!addrCache[addr]) {
+        try {
+          if (addr && googleApiKey) {
+            addrCache[addr] = await geocodeAddress(addr);
+          }
+        } catch(e) {}
+        if (!addrCache[addr]) addrCache[addr] = null;
+      }
+      const coords = addrCache[addr];
+      const dist = coords ? haversine(depotCoords, coords) : 99999;
+      geocoded.push({...r, coords, _distToCentroid: dist});
     }
+    hideLoading();
+
+    const sorted = geocoded.sort((a,b) => a._distToCentroid - b._distToCentroid);
 
     // 各配送員から最大2件まで均等抽出
     const driverCount = {};
@@ -3327,7 +3330,7 @@ async function buildNewRoutes() {
     }
 
     handoverState.newRouteRows[day] = selected;
-  });
+  }
 
   renderNewRouteResult(targetDays[0]);
   document.getElementById('newroute-result').style.display = 'block';
