@@ -2588,7 +2588,7 @@ function onAbsenceDepotOrDayChange() {
   }
 
   // その曜日の各配送員の担当件数を集計
-  const driverCol = DAY_DRIVER_COL[day];
+  const driverCol = HANDOVER_DAY_COL[day];
   const drivers = {}; // name -> rows[]
   (allData[depot]||[]).forEach(r => {
     if (String(r[day]||'') !== '○' && String(r[day]||'') !== '〇') return;
@@ -2710,7 +2710,7 @@ async function runAbsenceReassign() {
   if (!depot || !day) { alert('デポと曜日を選択してください'); return; }
   if (!absenceState.absentDrivers.size) { alert('お休みする配送員を1名以上選択してください'); return; }
 
-  const driverCol = DAY_DRIVER_COL[day];
+  const driverCol = HANDOVER_DAY_COL[day];
   const absentSet = absenceState.absentDrivers;
   const excludedSet = absenceState.excludedDrivers || new Set();
   const drivers = absenceState.driversForDay;
@@ -3076,14 +3076,14 @@ let handoverState = {
   newRouteRows: {},      // {曜日: [行...]}
 };
 
-const DAY_DRIVER_COL = {月:'配送員予定（月）',火:'配送員予定（火）',水:'配送員予定（水）',木:'配送員予定（木）'};
+const HANDOVER_DAY_COL = {月:'配送員予定（月）',火:'配送員予定（火）',水:'配送員予定（水）',木:'配送員予定（木）'};
 
 // allDataまたはallocationResultからその行の担当者を返すヘルパー
 function _getDriverForDay(r, day) {
   // allocationResult由来の行は _driver がある
   if (r._driver) return r._driver;
   // allData由来の行は配送員予定列を参照
-  return String(r[DAY_DRIVER_COL[day]]||'').trim();
+  return String(r[HANDOVER_DAY_COL[day]]||'').trim();
 }
 
 // allDataから全曜日のフラット行リストを生成（allocationResult形式に近い）
@@ -3094,7 +3094,7 @@ function _buildRowsFromAllData() {
       ['月','火','水','木'].forEach(day => {
         const mark = String(r[day]||'');
         if (mark !== '○' && mark !== '〇') return;
-        const drv = String(r[DAY_DRIVER_COL[day]]||'').trim();
+        const drv = String(r[HANDOVER_DAY_COL[day]]||'').trim();
         result[day].push({
           ...r,
           _driver: drv,
@@ -3145,7 +3145,7 @@ function onHandoverDepotChange() {
   const driversSet = new Set();
   (allData[depot]||[]).forEach(r => {
     ['月','火','水','木'].forEach(day => {
-      const drv = String(r[DAY_DRIVER_COL[day]]||'').trim();
+      const drv = String(r[HANDOVER_DAY_COL[day]]||'').trim();
       if (drv) driversSet.add(drv);
     });
   });
